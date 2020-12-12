@@ -10,6 +10,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "cli-progress": "^3.8.2",
+    "dotenv": "^8.2.0",
     "enquirer": "^2.3.5",
     "googleapis": "^51.0.0",
     "node-ssh": "^10.0.2"

@@ -1,12 +1,17 @@
+require('dotenv').config();
 const { AutoComplete, Select } = require('enquirer');
 const fs = require('fs');
 const path = require('path');
 const NodeSSH = require('node-ssh');
-
+const cliProgress = require('cli-progress');
 let username = process.env.USB_USER;
 let host = process.env.USB_HOST;
 let password = process.env.USB_PASSWORD;
 
+const bar1 = new cliProgress.SingleBar({
+    format: '{bar} {percentage}% | Speed: {speed} {speedUnits} | {currentSize} {currentSizeUnits} / {totalSize} {totalSizeUnits} | ETA: {etaString}'
+}, cliProgress.Presets.shades_classic);
+let barStarted = false;
 const googleDriveRootFolderId = process.env.USB_gdrive_root;
 const { google } = require('googleapis');
 let creds = require('./private/seedbox-rclone-278014-9362f8e13fdd.json');
@@ -38,6 +43,21 @@ const client = new google.auth.JWT(
     creds.client_email, null, creds.private_key, ['https://www.googleapis.com/auth/drive']
 );
 
+const getRoundedMBytes = (value, units) => {
+    let mulFactor;
+    switch (units[0]) {
+        case "M":
+            mulFactor = 1;
+            break;
+        case "G":
+            mulFactor = 1024;
+            break;
+        default:
+            mulFactor = 1;
+    }
+    return Math.round(value*mulFactor);
+};
+
 
 const main = async() => {
 
@@ -46,17 +66,18 @@ const main = async() => {
         message: 'directory to search in',
         choices: Object.keys(directories)
     });
-    let directoryKey = await directoryInput.run();
+    const directoryKey = await directoryInput.run();
+    const targetDirectory = directories[directoryKey];
 
-    let ssh = new NodeSSH();
+    const ssh = new NodeSSH();
     await ssh.connect({
         host,
         username,
         password
     });
-    let directoryChangeListCommand = `cd ${directories[directoryKey]} && ls`;
-    let directoryResponse = await ssh.execCommand(directoryChangeListCommand);
-    let fileDirectoryArray = directoryResponse.stdout.split('\n');
+    // const directoryChangeListCommand = `cd ${directories[directoryKey]} && ls`;
+    const directoryResponse = await ssh.execCommand(`ls`, {cwd: targetDirectory});
+    const fileDirectoryArray = directoryResponse.stdout.split('\n');
 
     const fileInput = new AutoComplete({
         name: 'fileName',
@@ -64,15 +85,47 @@ const main = async() => {
         limit: 10,
         choices: fileDirectoryArray
     });
-    let fileName = await fileInput.run();
-    let isFileCommand = `cd ${directories[directoryKey]} && file "${fileName}"`;
-    let isFileResponse = await ssh.execCommand(isFileCommand);
-    let isFile = !isFileResponse.stdout.includes(': directory');
+    const fileName = await fileInput.run();
+    // const isFileCommand = `file "${fileName}"`;
+    const isFileResponse = await ssh.execCommand(`file "${fileName}"`, {cwd: targetDirectory});
+    const isFile = !isFileResponse.stdout.includes(': directory');
 
 
-    let rcloneCopyCommand = isFile?`cd ${directories[directoryKey]} && rclone copy "${fileName}/" drive:"seedbox/"`:`cd ${directories[directoryKey]} && rclone copy "${fileName}/" drive:"seedbox/${fileName}"`;
+    const rcloneCopyCommand = `rclone copy --progress "${fileName}/" drive:"seedbox/${isFile?"":fileName}"`;
     console.log('>>>Uploading...');
-    let rcloneResponse = await ssh.execCommand(rcloneCopyCommand);
+
+    await ssh.execCommand(rcloneCopyCommand, {
+        cwd: targetDirectory,
+        onStdout(chunk) {
+            const response = chunk.toString("utf8");
+            const regexMatchResults = response.match(/Transferred:\s+([\d.]+)([\w]*)\s+\/\s+([\d.]+)\s+([\w]+),\s+(\d{1,3}|-)%?,\s+([\d.]+)\s+([\w/]+),\sETA\s([\w-]+)\n/);
+            const [totalMatch, currentSize, currentSizeUnits, totalSize, totalSizeUnits, rclonePercentage, speed, speedUnits, etaString] = regexMatchResults;
+            const barPayload = {
+                currentSize,
+                currentSizeUnits,
+                totalSize,
+                totalSizeUnits,
+                rclonePercentage,
+                speed,
+                speedUnits,
+                etaString,
+            };
+            const total = getRoundedMBytes(totalSize, totalSizeUnits);
+            const value = getRoundedMBytes(currentSize, currentSizeUnits);
+
+            if (!barStarted && parseInt(totalSize)!==0) {
+                bar1.start(total, value, barPayload);
+                barStarted = true;
+            }
+            if (barStarted) {
+                bar1.update(value, barPayload);
+            }
+        },
+        onStderr(chunk) {
+            const response = chunk.toString("utf8");
+        },
+    });
+    bar1.stop();
     console.log('>>>Uploaded!');
 
     client.authorize((err, tokens) => {
