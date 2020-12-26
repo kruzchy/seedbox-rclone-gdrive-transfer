@@ -27,11 +27,9 @@ const client = new google.auth.JWT(
 );
 
 class App {
-    barStarted = false;
-    shouldCopyToDrive = true;
-    targetDirectory = null;
     constructor() {
-
+        this.barStarted = false;
+        this.targetDirectory = null;
     }
 
     getGdriveLinkTemplate = (id, isFile) => {
@@ -118,7 +116,7 @@ class App {
             if (err) {
                 throw new Error('[INFO]google-api authorization failed')
             } else {
-                console.log('[INFO]connected to google-apis!!')
+                console.log('[INFO]connected to google-apis')
             }
         });
         const drive = google.drive({version: 'v3', auth: client});
@@ -132,7 +130,7 @@ class App {
             },
             fields: 'id'
         });
-        console.log("[INFO]File Permissions chnaged")
+        console.log("[INFO]Changed File Permissions")
         await ssh.dispose();
         return this.getGdriveLinkTemplate(gdriveFileObject.id, isFile);
     };
@@ -161,12 +159,13 @@ class App {
         const isFile = !isFileResponse.stdout.includes(': directory');
 
         //IF THE FOLDER IS NOT DOWNLOADS, CHECK IF THE MOVIE/SHOW IS ALREADY ON GDRIVE
-        const testResponse = await ssh.execCommand(`test -e "${fileName}" echo 1 || echo 0`,
-            {cwd: `~/Stuff/Local/lw886/${targetDirectoryKey}`});
-        if (targetDirectoryKey !== "Downloads" && parseInt(testResponse.stdout) === 1) {
+        const isOnHardDiskResponse = await ssh.execCommand(`test -e "${fileName}" && echo 1 || echo 0`,
+            {cwd: `Stuff/Local/lw886/${targetDirectoryKey}`});
+        if (targetDirectoryKey !== "Downloads" && parseInt(isOnHardDiskResponse.stdout) === 0) {
+            console.log("[INFO]Files are already on Google drive. Getting the drive link.")
             const rcloneListDirResponse = await ssh.execCommand(`rclone lsjson bmugdrive:lw886/${targetDirectoryKey}`);
             const rcloneFileObjects = JSON.parse(rcloneListDirResponse.stdout.replace("\n", ""));
-            const fileObject = rcloneFileObjects.find(obj => obj.name === fileName)
+            const fileObject = rcloneFileObjects.find(obj => obj.Name === fileName)
             return this.getGdriveLinkTemplate(fileObject.ID, isFile);
         } else {
             return await this.handleDriveUpload(fileName, targetDirectoryKey, isFile, ssh);
@@ -179,6 +178,7 @@ const main = async() => {
     const app = new App();
     const resultDriveLink = await app.init();
     console.log(resultDriveLink);
+    process.exit(0);
 };
 
 main().catch(err=>console.log(err));
